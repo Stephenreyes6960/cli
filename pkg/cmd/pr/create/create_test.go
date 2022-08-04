@@ -250,24 +250,72 @@ func initFakeHTTP() *httpmock.Registry {
 	return &httpmock.Registry{}
 }
 
-func TestPRCreate_nontty_web(t *testing.T) {
-	http := initFakeHTTP()
-	defer http.Verify(t)
+func TestPRCreate_Better(t *testing.T) {
+	cases := []struct {
+		name     string
+		cmdStubs func(*run.CommandStubber)
+		//promptStubs func(*prompter.PrompterMock)
+		askStubs  func(*prompt.AskStubber) // TODO eventually migrate to PrompterMock ^
+		httpStubs func(*httpmock.Registry)
+		remotes   func() context.Remotes
+		assert    func(test.CmdOut, error, *testing.T)
+		branch    string // TODO eventually port to opts fully
+		cli       string // TODO eventually port to opts fully
+		tty       bool   // TODO eventually port to opts fully
+	}{
+		{
+			name:   "nontty web",
+			branch: "feature",
+			cli:    `--web --head=feature`,
+			cmdStubs: func(cs *run.CommandStubber) {
+				cs.Register(`git status --porcelain`, 0, "")
+				cs.Register(`git( .+)? log( .+)? origin/master\.\.\.feature`, 0, "")
+			},
+			httpStubs: func(reg *httpmock.Registry) {
+				reg.StubRepoInfoResponse("OWNER", "REPO", "master")
+			},
+			assert: func(output test.CmdOut, err error, t *testing.T) {
+				assert.NoError(t, err)
 
-	http.StubRepoInfoResponse("OWNER", "REPO", "master")
+				assert.Equal(t, "", output.String())
+				assert.Equal(t, "", output.Stderr())
+				assert.Equal(t, "https://github.com/OWNER/REPO/compare/master...feature?body=&expand=1", output.BrowsedURL)
+			},
+		},
+	}
 
-	cs, cmdTeardown := run.Stub()
-	defer cmdTeardown(t)
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			http := initFakeHTTP()
+			defer http.Verify(t)
+			if tt.httpStubs != nil {
+				tt.httpStubs(http)
+			}
 
-	cs.Register(`git status --porcelain`, 0, "")
-	cs.Register(`git( .+)? log( .+)? origin/master\.\.\.feature`, 0, "")
+			//nolint:staticcheck // SA1019: prompt.InitAskStubber is deprecated: use NewAskStubber
+			ask, cleanupAsk := prompt.InitAskStubber()
+			defer cleanupAsk()
+			if tt.askStubs != nil {
+				tt.askStubs(ask)
+			}
 
-	output, err := runCommand(http, nil, "feature", false, `--web --head=feature`)
-	require.NoError(t, err)
+			cs, cmdTeardown := run.Stub()
+			defer cmdTeardown(t)
 
-	assert.Equal(t, "", output.String())
-	assert.Equal(t, "", output.Stderr())
-	assert.Equal(t, "https://github.com/OWNER/REPO/compare/master...feature?body=&expand=1", output.BrowsedURL)
+			if tt.cmdStubs != nil {
+				tt.cmdStubs(cs)
+			}
+
+			var remotes context.Remotes
+			if tt.remotes != nil {
+				remotes = tt.remotes()
+			}
+
+			output, err := runCommand(http, remotes, tt.branch, tt.tty, tt.cli)
+
+			tt.assert(*output, err, t)
+		})
+	}
 }
 
 func TestPRCreate_recover(t *testing.T) {
@@ -654,6 +702,7 @@ func TestPRCreate_nonLegacyTemplate(t *testing.T) {
 	cs.Register(`git( .+)? log( .+)? origin/master\.\.\.feature`, 0, "1234567890,commit 0\n2345678901,commit 1")
 	cs.Register(`git status --porcelain`, 0, "")
 
+	//nolint:staticcheck // SA1019: prompt.NewAskStubber is deprecated: use PrompterMock
 	as := prompt.NewAskStubber(t)
 
 	as.StubPrompt("Choose a template").
@@ -916,6 +965,7 @@ func TestPRCreate_draft(t *testing.T) {
 			assert.Equal(t, true, input["draft"].(bool))
 		}))
 
+	//nolint:staticcheck // SA1019: prompt.NewAskStubber is deprecated: use PrompterMock
 	as := prompt.NewAskStubber(t)
 
 	as.StubPrompt("Choose a template").AnswerDefault()
